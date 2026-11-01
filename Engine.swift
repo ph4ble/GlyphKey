@@ -154,6 +154,8 @@ final class GestureController {
 
     var frameCount: Int = 0
     var lastGesture: String = "—"
+    var deviceConnected: Bool = false
+    var deviceBuiltIn: Bool = false
 
     init() { self.config = Config.load() }
 
@@ -176,8 +178,9 @@ final class GestureController {
         }
         if chosen == nil { chosen = Multitouch.fnCreateDefault() }
         guard let d = chosen else {
+            deviceConnected = false
             lock.unlock()
-            DispatchQueue.main.async { self.onStatus?("未找到鼠标设备（请连接 Magic Mouse）") }
+            DispatchQueue.main.async { self.onStatus?("未找到鼠标设备（请连接 Magic Mouse 后点『重新连接设备』）") }
             return
         }
         device = d
@@ -185,14 +188,17 @@ final class GestureController {
         Multitouch.fnStart(d, 1)
         running = true
         let builtIn = Multitouch.fnIsBuiltIn(d)
+        deviceConnected = true
+        deviceBuiltIn = builtIn
         lock.unlock()
-        DispatchQueue.main.async { self.onStatus?("已连接外部设备，运行中（builtIn=\(builtIn ? 1 : 0)）\n帧数：0") }
+        DispatchQueue.main.async { self.onStatus?("已连接设备，运行中（builtIn=\(builtIn ? 1 : 0)）\n帧数：0") }
     }
 
     func stop() {
         lock.lock()
         if let d = device { Multitouch.fnUnregister(d); Multitouch.fnStop(d); device = nil }
         running = false
+        deviceConnected = false
         lock.unlock()
     }
 

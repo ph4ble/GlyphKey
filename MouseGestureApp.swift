@@ -224,15 +224,23 @@ class SettingsViewController: NSViewController {
         let perm = trusted
             ? "辅助功能：已授权 ✅"
             : "辅助功能：未授权 ⚠️ 点『打开辅助功能设置』，在系统设置里点 ＋ 加入本 App 并打勾，再退出重开"
+        let dev: String
+        if controller.deviceConnected {
+            dev = controller.deviceBuiltIn
+                ? "设备：已连接（但被识别为内建设备，可能不是 Magic Mouse）"
+                : "设备：已连接（外部 Magic Mouse）"
+        } else {
+            dev = "设备：未连接（请连接 Magic Mouse 后点『重新连接设备』）"
+        }
         let frameHint = controller.frameCount > 0
-            ? "（在涨 = 手势读取正常，输入监控已生效）"
-            : "（若一直不动，可能输入监控未授权或鼠标未连接）"
+            ? "（在涨 = 手势读取正常）"
+            : "（若一直为 0，可能权限尚未生效：请退出本 App 重新打开后再试）"
         statusBox.stringValue = """
-        设备：已连接并运行
+        \(dev)
         已捕获帧数：\(controller.frameCount) \(frameHint)
         最近识别：\(controller.lastGesture)
         \(perm)
-        输入监控：请到系统设置确认本 App 已加入并打勾（macOS 不提供读取该状态，App 内无法自动显示对号）
+        输入监控：请到系统设置确认本 App 已加入并打勾（macOS 不提供读取该状态，App 内无法自动显示对号；授权后请退出重开本 App 使其生效）
         """
     }
 }
@@ -277,6 +285,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.start()
         // Auto-open settings so the user can see the app is running and grant permissions.
         openSettings()
+
+        // Periodically refresh the live status so permission checkmarks and the device
+        // state update on their own (e.g. the Accessibility ✓ appears right after the
+        // user grants it in System Settings, without needing to click "测试触发").
+        Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            self?.settingsVC?.refreshLive()
+        }
     }
 
     func setupStatusItem() {
