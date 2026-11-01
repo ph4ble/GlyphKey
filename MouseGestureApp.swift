@@ -224,12 +224,15 @@ class SettingsViewController: NSViewController {
         let perm = trusted
             ? "辅助功能：已授权 ✅"
             : "辅助功能：未授权 ⚠️ 点『打开辅助功能设置』，在系统设置里点 ＋ 加入本 App 并打勾，再退出重开"
+        let frameHint = controller.frameCount > 0
+            ? "（在涨 = 手势读取正常，输入监控已生效）"
+            : "（若一直不动，可能输入监控未授权或鼠标未连接）"
         statusBox.stringValue = """
         设备：已连接并运行
-        已捕获帧数：\(controller.frameCount)
+        已捕获帧数：\(controller.frameCount) \(frameHint)
         最近识别：\(controller.lastGesture)
         \(perm)
-        输入监控：同样在 系统设置→隐私与安全性→输入监控 中加入本 App
+        输入监控：请到系统设置确认本 App 已加入并打勾（macOS 不提供读取该状态，App 内无法自动显示对号）
         """
     }
 }
