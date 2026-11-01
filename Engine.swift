@@ -97,7 +97,9 @@ func cgFlags(for flag: String) -> CGEventFlags {
 // the same file is compiled together with a main file that has top-level code).
 // ---------------------------------------------------------------------------
 typealias MTDeviceRef = OpaquePointer
-typealias MTCallback = @convention(c) (MTDeviceRef?, UnsafeMutableRawPointer?, Int32, Double, Int32) -> Void
+// NOTE: the real callback returns Int32 (Karabiner-Elements mirrors this and returns 0).
+// A `-> Void` binding is an ABI mismatch with the framework and must be avoided.
+typealias MTCallback = @convention(c) (MTDeviceRef?, UnsafeMutableRawPointer?, Int32, Double, Int32) -> Int32
 
 enum Multitouch {
     static let fwPath = "/System/Library/PrivateFrameworks/MultitouchSupport.framework/MultitouchSupport"
@@ -121,13 +123,16 @@ enum Multitouch {
     static let fnCreateList:     @convention(c) () -> CFArray?                 = sym("MTDeviceCreateList")
     static let fnCreateDefault:  @convention(c) () -> MTDeviceRef?             = sym("MTDeviceCreateDefault")
     static let fnIsBuiltIn:      @convention(c) (MTDeviceRef?) -> Bool          = sym("MTDeviceIsBuiltIn")
-    static let fnStart:          @convention(c) (MTDeviceRef?, Int32) -> Void  = sym("MTDeviceStart")
-    static let fnStop:           @convention(c) (MTDeviceRef?) -> Void         = sym("MTDeviceStop")
+    static let fnStart:          @convention(c) (MTDeviceRef?, Int32) -> Int32  = sym("MTDeviceStart")
+    // Karabiner-Elements calls MTDeviceStop(device, 0) — two args. Match it.
+    static let fnStop:           @convention(c) (MTDeviceRef?, Int32) -> Void  = sym("MTDeviceStop")
     static let fnRegister:       @convention(c) (MTDeviceRef?, MTCallback?) -> Void = sym("MTRegisterContactFrameCallback")
     static let fnUnregister:     @convention(c) (MTDeviceRef?) -> Void         = sym("MTUnregisterContactFrameCallback")
 
+    // The callback must return Int32 (0). The framework expects a return value.
     static let cCallback: MTCallback = { device, touches, n, ts, frame in
         GestureController.shared.handleFrame(touches: touches, n: n, ts: ts)
+        return 0
     }
 }
 
@@ -143,6 +148,7 @@ final class GestureController {
     private var strokeStart: Double = 0
     private var lastFireTS: Double = -10
     private var device: MTDeviceRef?
+    private var devices: [MTDeviceRef] = []
     private var running = false
     private var pendingTap: DispatchWorkItem?
 
@@ -156,6 +162,7 @@ final class GestureController {
     var lastGesture: String = "—"
     var deviceConnected: Bool = false
     var deviceBuiltIn: Bool = false
+    static var debugFP: UnsafeMutablePointer<FILE>? = nil
 
     init() { self.config = Config.load() }
 
@@ -166,44 +173,80 @@ final class GestureController {
     func saveConfig() { config.save() }
 
     func start() {
+        if config.debug {
+            GestureController.debugFP = fopen("/tmp/mgk_app.log", "w")
+            if let fp = GestureController.debugFP {
+                let exe = CommandLine.arguments.first ?? "?"
+                let pid = ProcessInfo.processInfo.processIdentifier
+                fputs(String(format: "=== start pid=%d exe=%s\n", pid, (exe as NSString).utf8String ?? ""), fp)
+                fflush(fp)
+            }
+        }
         lock.lock()
         guard !running else { lock.unlock(); return }
-        var chosen: MTDeviceRef?
+        var started: [MTDeviceRef] = []
         if let list = Multitouch.fnCreateList() {
             let count = CFArrayGetCount(list)
             for i in 0..<count {
                 let dev = unsafeBitCast(CFArrayGetValueAtIndex(list, i), to: MTDeviceRef?.self)
-                if let dev = dev, !Multitouch.fnIsBuiltIn(dev) { chosen = dev }
+                if let dev = dev {
+                    Multitouch.fnRegister(dev, Multitouch.cCallback)
+                    let rc = Multitouch.fnStart(dev, 0)
+                    let b = Multitouch.fnIsBuiltIn(dev)
+                    fputs(String(format: "started dev#%d builtIn=%d rc=%d\n", i, b ? 1 : 0, rc), stderr)
+                    if let fp = GestureController.debugFP {
+                        fputs(String(format: "started dev#%d builtIn=%d rc=%d\n", i, b ? 1 : 0, rc), fp); fflush(fp)
+                    }
+                    started.append(dev)
+                }
             }
         }
-        if chosen == nil { chosen = Multitouch.fnCreateDefault() }
-        guard let d = chosen else {
+        if started.isEmpty {
+            if let d = Multitouch.fnCreateDefault() {
+                Multitouch.fnRegister(d, Multitouch.cCallback)
+                let rc = Multitouch.fnStart(d, 0)
+                fputs(String(format: "started default dev rc=%d\n", rc), stderr)
+                started.append(d)
+            }
+        }
+        guard !started.isEmpty else {
             deviceConnected = false
             lock.unlock()
             DispatchQueue.main.async { self.onStatus?("未找到鼠标设备（请连接 Magic Mouse 后点『重新连接设备』）") }
             return
         }
-        device = d
-        Multitouch.fnRegister(d, Multitouch.cCallback)
-        Multitouch.fnStart(d, 1)
+        devices = started
+        device = started.first
         running = true
-        let builtIn = Multitouch.fnIsBuiltIn(d)
         deviceConnected = true
-        deviceBuiltIn = builtIn
+        deviceBuiltIn = Multitouch.fnIsBuiltIn(device!)
+        let bi = deviceBuiltIn
+        fputs(String(format: "DEVICE connected (%d device(s)) builtIn=%d\n", started.count, bi ? 1 : 0), stderr)
         lock.unlock()
-        DispatchQueue.main.async { self.onStatus?("已连接设备，运行中（builtIn=\(builtIn ? 1 : 0)）\n帧数：0") }
+        DispatchQueue.main.async { self.onStatus?("已连接设备，运行中（builtIn=\(bi ? 1 : 0)）\n帧数：0") }
     }
 
     func stop() {
         lock.lock()
-        if let d = device { Multitouch.fnUnregister(d); Multitouch.fnStop(d); device = nil }
+        for d in devices { Multitouch.fnUnregister(d); Multitouch.fnStop(d, 0) }
+        devices.removeAll()
+        device = nil
         running = false
         deviceConnected = false
         lock.unlock()
+        if GestureController.debugFP != nil {
+            fclose(GestureController.debugFP)
+            GestureController.debugFP = nil
+        }
     }
 
     func handleFrame(touches: UnsafeMutableRawPointer?, n: Int32, ts: Double) {
         lock.lock(); defer { lock.unlock() }
+        if config.debug {
+            let line = String(format: "cb n=%d\n", n)
+            fputs(line, stderr)
+            if let fp = GestureController.debugFP { fputs(line, fp); fflush(fp) }
+        }
         guard n >= 0, n <= 20 else { return }
         let num = Int(n)
         let now = CFAbsoluteTimeGetCurrent()
@@ -221,11 +264,13 @@ final class GestureController {
             lastTouchTS = now
             frameCount += 1
             if frameCount % 10 == 0 { let fc = frameCount; DispatchQueue.main.async { self.onFrame?(); self.onStatus?(self.statusLine(frames: fc)) } }
-            if config.debug {
-                let x = readFloat(bytes, 8)
-                let y = readFloat(bytes, 12)
-                fputs(String(format: "frame n=%d x=%.4f y=%.4f pts=%d\n", num, x, y, strokeRaw.count), stderr)
-            }
+        if config.debug {
+            let x = readFloat(bytes, 8)
+            let y = readFloat(bytes, 12)
+            let line = String(format: "frame n=%d x=%.4f y=%.4f pts=%d\n", num, x, y, strokeRaw.count)
+            fputs(line, stderr)
+            if let fp = GestureController.debugFP { fputs(line, fp); fflush(fp) }
+        }
         } else {
             if !strokeRaw.isEmpty && (now - lastTouchTS) > 0.12 {
                 finalizeStroke()
