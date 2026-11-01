@@ -1,0 +1,20 @@
+# Build artifacts (produced by build.sh)
+MouseGestureKey
+MouseGestureKey.app/
+
+# macOS
+.DS_Store
+
+# Runtime user config (generated automatically at first run)
+.mousegesturekey.json
+
+# Logs
+*.log
+mousegesturekey.log
+
+# WorkBuddy session metadata (if the repo is created inside a session folder)
+.workbuddy-ai/
+
+# Xcode / Swift build intermediates
+.build/
+*.o

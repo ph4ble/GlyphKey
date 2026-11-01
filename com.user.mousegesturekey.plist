@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.user.mousegesturekey</string>
+    <key>ProgramArguments</key>
+    <array>
+        <!-- 把下面的路径改成你机器上 MouseGestureKey 二进制的绝对路径 -->
+        <string>/path/to/MouseGestureKey</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/tmp/mousegesturekey.log</string>
+</dict>
+</plist>

@@ -1,0 +1,12 @@
+{
+  "bindings": [
+    { "gesture": "circle",     "keyCode": 61, "flag": "rightOption", "enabled": true  },
+    { "gesture": "swipeRight", "keyCode": 49, "flag": "",           "enabled": false },
+    { "gesture": "tap",        "keyCode": 55, "flag": "command",    "enabled": false }
+  ],
+  "debug": false,
+  "holdSeconds": 0,
+  "minAngularCoverage": 3.8,
+  "maxRadiusStd": 0.6,
+  "maxClosure": 0.45
+}
