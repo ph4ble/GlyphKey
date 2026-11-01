@@ -20,8 +20,17 @@ swiftc -swift-version 5 -O \
 echo "==> Writing Info.plist"
 cp Info.plist "$APP/Contents/Info.plist"
 
-echo "==> Ad-hoc code signing (local use)"
-codesign --force --deep --sign - "$APP" 2>/dev/null || echo "  (codesign unavailable; app may need manual signing)"
+echo "==> Code signing"
+CERT="MouseGestureKey Local Signing"
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "$CERT"; then
+  # Stable local cert: permission grants survive rebuilds (re-grant only once).
+  codesign --force --deep --sign "$CERT" --options runtime "$APP" 2>/dev/null || echo "  (app codesign failed)"
+  codesign --force --sign "$CERT" --options runtime MouseGestureKey 2>/dev/null || echo "  (cli codesign failed)"
+  echo "  signed with stable cert: $CERT"
+else
+  echo "  (cert '$CERT' not found -> ad-hoc; re-grant permissions after each rebuild)"
+  codesign --force --deep --sign - "$APP" 2>/dev/null || echo "  (codesign unavailable; app may need manual signing)"
+fi
 
 echo "OK"
 echo "  CLI : ./MouseGestureKey   (./MouseGestureKey --selftest to self-test)"

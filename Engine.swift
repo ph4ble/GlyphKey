@@ -162,6 +162,7 @@ final class GestureController {
     var lastGesture: String = "—"
     var deviceConnected: Bool = false
     var deviceBuiltIn: Bool = false
+    private var dumpCount: Int = 0
     static var debugFP: UnsafeMutablePointer<FILE>? = nil
 
     init() { self.config = Config.load() }
@@ -175,6 +176,7 @@ final class GestureController {
     func start() {
         if config.debug {
             GestureController.debugFP = fopen("/tmp/mgk_app.log", "w")
+            dumpCount = 60   // dump raw fields for the first 60 frames to locate x/y
             if let fp = GestureController.debugFP {
                 let exe = CommandLine.arguments.first ?? "?"
                 let pid = ProcessInfo.processInfo.processIdentifier
@@ -259,17 +261,22 @@ final class GestureController {
                 strokeRaw.removeAll()
                 strokeStart = now
             }
-            let bytes = Data(bytes: t, count: 80)
+            let bytes = Data(bytes: t, count: 256)
             strokeRaw.append(bytes)
             lastTouchTS = now
             frameCount += 1
             if frameCount % 10 == 0 { let fc = frameCount; DispatchQueue.main.async { self.onFrame?(); self.onStatus?(self.statusLine(frames: fc)) } }
         if config.debug {
-            let x = readFloat(bytes, 8)
-            let y = readFloat(bytes, 12)
-            let line = String(format: "frame n=%d x=%.4f y=%.4f pts=%d\n", num, x, y, strokeRaw.count)
-            fputs(line, stderr)
-            if let fp = GestureController.debugFP { fputs(line, fp); fflush(fp) }
+            if dumpCount > 0 {
+                dumpCount -= 1
+                var s = String(format: "frame n=%d pts=%d:", num, strokeRaw.count)
+                for off in stride(from: 0, through: 248, by: 4) {
+                    s += String(format: " %d:%.3f", off, readFloat(bytes, off))
+                }
+                s += "\n"
+                fputs(s, stderr)
+                if let fp = GestureController.debugFP { fputs(s, fp); fflush(fp) }
+            }
         }
         } else {
             if !strokeRaw.isEmpty && (now - lastTouchTS) > 0.12 {
@@ -286,6 +293,11 @@ final class GestureController {
     private func finalizeStroke() {
         let raw = strokeRaw
         strokeRaw.removeAll()
+        if config.debug {
+            let line = String(format: "finalize raw.count=%d\n", raw.count)
+            fputs(line, stderr)
+            if let fp = GestureController.debugFP { fputs(line, fp); fflush(fp) }
+        }
         guard raw.count >= 2 else { return }
         guard let pts = extractPoints(raw) else { return }
         let duration = CFAbsoluteTimeGetCurrent() - strokeStart
@@ -299,22 +311,48 @@ final class GestureController {
         }
     }
 
-    // Pick the byte offset whose coordinates look normalized (within [0,1]) so we
-    // work regardless of the exact touch-struct layout on this macOS version.
+    // Locate the (x, y) float pair inside the touch struct by scanning every 4-byte
+    // offset. We pick the pair that forms the smallest, finite, non-degenerate 2D
+    // bounding box — that is almost always the real normalized touch coordinates
+    // regardless of the exact struct layout on this macOS version. (The gesture
+    // math below re-normalizes by max(w,h) anyway, so the absolute scale is moot.)
     private func extractPoints(_ raw: [Data]) -> [(Float, Float)]? {
-        for off in stride(from: 0, through: 64, by: 4) {
-            var pts: [(Float, Float)] = []
+        let len = raw.first?.count ?? 0
+        guard len >= 12 else { return nil }
+        var best: (off: Int, w: Float, h: Float)? = nil
+        var near: (off: Int, w: Float, h: Float)? = nil
+        for off in stride(from: 0, through: len - 8, by: 4) {
+            var xs: [Float] = [], ys: [Float] = []
+            var ok = true
             for d in raw {
                 let x = readFloat(d, off)
                 let y = readFloat(d, off + 4)
-                if x.isFinite && y.isFinite && abs(x) < 1e4 && abs(y) < 1e4 { pts.append((x, y)) }
+                if !x.isFinite || !y.isFinite || abs(x) > 1e6 || abs(y) > 1e6 { ok = false; break }
+                xs.append(x); ys.append(y)
             }
-            if pts.count < 2 { continue }
-            let xs = pts.map { $0.0 }, ys = pts.map { $0.1 }
+            if !ok { continue }
             let w = xs.max()! - xs.min()!, h = ys.max()! - ys.min()!
-            if w >= 0.02, w <= 1.2, h >= 0.02, h <= 1.2 { return pts }
+            if near == nil || (w + h) < (near!.w + near!.h) { near = (off, w, h) }
+            if w > 0.02, h > 0.02 {
+                if best == nil || (w + h) < (best!.w + best!.h) { best = (off, w, h) }
+            }
         }
-        return nil
+        if config.debug {
+            if let b = best {
+                let line = String(format: "extract BEST off=%d w=%.3f h=%.3f\n", b.off, b.w, b.h)
+                fputs(line, stderr)
+                if let fp = GestureController.debugFP { fputs(line, fp); fflush(fp) }
+            } else {
+                let n = near.map { String(format: "off=%d w=%.4f h=%.4f", $0.off, $0.w, $0.h) } ?? "none"
+                let line = String(format: "extract NONE near=%@\n", n)
+                fputs(line, stderr)
+                if let fp = GestureController.debugFP { fputs(line, fp); fflush(fp) }
+            }
+        }
+        guard let b = best else { return nil }
+        var pts: [(Float, Float)] = []
+        for d in raw { pts.append((readFloat(d, b.off), readFloat(d, b.off + 4))) }
+        return pts
     }
 
     private func classify(_ pts: [(Float, Float)], duration: Double) -> String? {
