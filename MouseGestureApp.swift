@@ -119,10 +119,17 @@ class SettingsViewController: NSViewController {
 
         // Buttons
         let testBtn = NSButton(title: "测试触发（验证按键是否发送）", target: self, action: #selector(testTrigger))
-        let permsBtn = NSButton(title: "打开系统权限设置", target: self, action: #selector(openPermsAction))
-        let axBtn = NSButton(title: "请求辅助功能权限", target: self, action: #selector(reqAXAction))
-        let btnRow = NSStackView(views: [testBtn, permsBtn, axBtn]); btnRow.spacing = 8
-        stack.addArrangedSubview(btnRow)
+        let revealBtn = NSButton(title: "在访达中显示本 App", target: self, action: #selector(revealInFinder))
+        let row1 = NSStackView(views: [testBtn, revealBtn]); row1.spacing = 8
+        stack.addArrangedSubview(row1)
+
+        let axPaneBtn = NSButton(title: "打开辅助功能设置", target: self, action: #selector(openAXPrefs))
+        let imPaneBtn = NSButton(title: "打开输入监控设置", target: self, action: #selector(openIMPrefs))
+        let row2 = NSStackView(views: [axPaneBtn, imPaneBtn]); row2.spacing = 8
+        stack.addArrangedSubview(row2)
+
+        let hint = label("授权步骤：① 点上面按钮打开对应设置页 → ② 点左下角 ＋ 把本 App 加进去并打勾 → ③ 菜单栏🖱️退出后重新打开本 App（权限改完要重启才生效）。", secondary: true)
+        stack.addArrangedSubview(hint)
 
         self.view = root
         refreshLive()
@@ -205,19 +212,24 @@ class SettingsViewController: NSViewController {
     }
 
     @objc func testTrigger(_ s: Any) { controller.testTrigger() }
-    @objc func openPermsAction(_ s: Any) { openPermissions() }
-    @objc func reqAXAction(_ s: Any) { requestAccessibility() }
+    @objc func revealInFinder(_ s: Any) {
+        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+    }
+    @objc func openAXPrefs(_ s: Any) { openAccessibilityPrefs() }
+    @objc func openIMPrefs(_ s: Any) { openInputMonitoringPrefs() }
 
     // Called by the app delegate on live events.
     func refreshLive() {
         let trusted = AXIsProcessTrusted()
-        let perm = trusted ? "辅助功能：已授权 ✅" : "辅助功能：未授权 ⚠️（请在系统设置中允许本 App）"
+        let perm = trusted
+            ? "辅助功能：已授权 ✅"
+            : "辅助功能：未授权 ⚠️ 点『打开辅助功能设置』，在系统设置里点 ＋ 加入本 App 并打勾，再退出重开"
         statusBox.stringValue = """
         设备：已连接并运行
         已捕获帧数：\(controller.frameCount)
         最近识别：\(controller.lastGesture)
         \(perm)
-        输入监控：需在系统设置中手动允许
+        输入监控：同样在 系统设置→隐私与安全性→输入监控 中加入本 App
         """
     }
 }
@@ -341,15 +353,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 // ---------------------------------------------------------------------------
 // Permission helpers
 // ---------------------------------------------------------------------------
-func openPermissions() {
-    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_InputMonitoring") {
-        NSWorkspace.shared.open(url)
-    }
+func openAccessibilityPrefs() {
+    let fallback = URL(string: "x-apple.systempreferences:com.apple.preference.security")!
+    let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") ?? fallback
+    NSWorkspace.shared.open(url)
 }
 
-func requestAccessibility() {
-    let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-    AXIsProcessTrustedWithOptions(opts)
+func openInputMonitoringPrefs() {
+    let fallback = URL(string: "x-apple.systempreferences:com.apple.preference.security")!
+    let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_InputMonitoring") ?? fallback
+    NSWorkspace.shared.open(url)
 }
 
 // ---------------------------------------------------------------------------
