@@ -57,8 +57,8 @@ struct Config: Codable {
             debug: false,
             holdSeconds: 0,
             minAngularCoverage: 3.8,
-            maxRadiusStd: 0.6,
-            maxClosure: 0.45
+            maxRadiusStd: 0.9,
+            maxClosure: 0.35
         )
     }
 
@@ -147,6 +147,7 @@ final class GestureController {
     private var lastEndTS: Double = -10
     private var strokeStart: Double = 0
     private var lastFireTS: Double = -10
+    private var finalizeTimer: Timer?
     private var device: MTDeviceRef?
     private var devices: [MTDeviceRef] = []
     private var running = false
@@ -176,7 +177,7 @@ final class GestureController {
     func start() {
         if config.debug {
             GestureController.debugFP = fopen("/tmp/mgk_app.log", "w")
-            dumpCount = 60   // dump raw fields for the first 60 frames to locate x/y
+            dumpCount = 800  // dump raw fields for the first 800 frames to locate x/y
             if let fp = GestureController.debugFP {
                 let exe = CommandLine.arguments.first ?? "?"
                 let pid = ProcessInfo.processInfo.processIdentifier
@@ -230,6 +231,7 @@ final class GestureController {
 
     func stop() {
         lock.lock()
+        finalizeTimer?.invalidate(); finalizeTimer = nil
         for d in devices { Multitouch.fnUnregister(d); Multitouch.fnStop(d, 0) }
         devices.removeAll()
         device = nil
@@ -253,6 +255,8 @@ final class GestureController {
         let num = Int(n)
         let now = CFAbsoluteTimeGetCurrent()
         if num >= 1 {
+            // A real touch arrived: cancel any pending end-of-stroke finalize.
+            finalizeTimer?.invalidate(); finalizeTimer = nil
             guard let t = touches else { return }
             if strokeRaw.isEmpty {
                 strokeRaw.removeAll()
@@ -266,22 +270,23 @@ final class GestureController {
             lastTouchTS = now
             frameCount += 1
             if frameCount % 10 == 0 { let fc = frameCount; DispatchQueue.main.async { self.onFrame?(); self.onStatus?(self.statusLine(frames: fc)) } }
-        if config.debug {
-            if dumpCount > 0 {
+            if config.debug && dumpCount > 0 {
                 dumpCount -= 1
+                let dumpOffsets = [8,12,20,24,28,32,36,40,44,48,56,60,64,68,72,76,80,92,128,132,136,140,144,156,160,164,168,172,176,188]
                 var s = String(format: "frame n=%d pts=%d:", num, strokeRaw.count)
-                for off in stride(from: 0, through: 248, by: 4) {
-                    s += String(format: " %d:%.3f", off, readFloat(bytes, off))
-                }
+                for off in dumpOffsets { s += String(format: " %d:%.3f", off, readFloat(bytes, off)) }
                 s += "\n"
                 fputs(s, stderr)
                 if let fp = GestureController.debugFP { fputs(s, fp); fflush(fp) }
             }
-        }
         } else {
-            if !strokeRaw.isEmpty && (now - lastTouchTS) > 0.12 {
-                finalizeStroke()
-                lastEndTS = now
+            // Touch ended. Schedule finalize 0.12s later so it fires even if the
+            // framework stops calling the callback after the lift.
+            if !strokeRaw.isEmpty && finalizeTimer == nil {
+                finalizeTimer = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: false) { [weak self] _ in
+                    self?.finalizeTimer = nil
+                    self?.finalizeStroke()
+                }
             }
         }
     }
@@ -293,6 +298,7 @@ final class GestureController {
     private func finalizeStroke() {
         let raw = strokeRaw
         strokeRaw.removeAll()
+        lastEndTS = CFAbsoluteTimeGetCurrent()
         if config.debug {
             let line = String(format: "finalize raw.count=%d\n", raw.count)
             fputs(line, stderr)
@@ -311,47 +317,58 @@ final class GestureController {
         }
     }
 
-    // Locate the (x, y) float pair inside the touch struct by scanning every 4-byte
-    // offset. We pick the pair that forms the smallest, finite, non-degenerate 2D
-    // bounding box — that is almost always the real normalized touch coordinates
-    // regardless of the exact struct layout on this macOS version. (The gesture
-    // math below re-normalizes by max(w,h) anyway, so the absolute scale is moot.)
+    // Locate the (x, y) float pair inside the touch struct.
+    // Empirically confirmed for this framework/device: the normalized touch POSITION
+    // is a float pair at byte offsets (32, 36). We try that first (and (20,24) as a
+    // secondary guess), then fall back to a full offset scan for other layouts.
     private func extractPoints(_ raw: [Data]) -> [(Float, Float)]? {
         let len = raw.first?.count ?? 0
-        guard len >= 12 else { return nil }
-        var best: (off: Int, w: Float, h: Float)? = nil
-        var near: (off: Int, w: Float, h: Float)? = nil
-        for off in stride(from: 0, through: len - 8, by: 4) {
+        guard len >= 40 else { return nil }
+        let candidates: [(ox: Int, oy: Int)] = [(32, 36), (20, 24)]
+        for c in candidates {
+            if c.ox + 4 >= len { continue }
             var xs: [Float] = [], ys: [Float] = []
             var ok = true
             for d in raw {
-                let x = readFloat(d, off)
-                let y = readFloat(d, off + 4)
+                let x = readFloat(d, c.ox), y = readFloat(d, c.oy)
                 if !x.isFinite || !y.isFinite || abs(x) > 1e6 || abs(y) > 1e6 { ok = false; break }
                 xs.append(x); ys.append(y)
             }
             if !ok { continue }
             let w = xs.max()! - xs.min()!, h = ys.max()! - ys.min()!
-            if near == nil || (w + h) < (near!.w + near!.h) { near = (off, w, h) }
             if w > 0.02, h > 0.02 {
-                if best == nil || (w + h) < (best!.w + best!.h) { best = (off, w, h) }
+                if config.debug {
+                    let line = String(format: "extract off=%d w=%.3f h=%.3f\n", c.ox, w, h)
+                    fputs(line, stderr)
+                    if let fp = GestureController.debugFP { fputs(line, fp); fflush(fp) }
+                }
+                return zip(xs, ys).map { ($0, $1) }
             }
         }
-        if config.debug {
-            if let b = best {
-                let line = String(format: "extract BEST off=%d w=%.3f h=%.3f\n", b.off, b.w, b.h)
-                fputs(line, stderr)
-                if let fp = GestureController.debugFP { fputs(line, fp); fflush(fp) }
-            } else {
-                let n = near.map { String(format: "off=%d w=%.4f h=%.4f", $0.off, $0.w, $0.h) } ?? "none"
-                let line = String(format: "extract NONE near=%@\n", n)
-                fputs(line, stderr)
-                if let fp = GestureController.debugFP { fputs(line, fp); fflush(fp) }
+        // Fallback: smallest coherent (0.02..3.0) bounding box across all offsets.
+        var best: (off: Int, w: Float, h: Float)? = nil
+        for off in stride(from: 0, through: len - 8, by: 4) {
+            var xs: [Float] = [], ys: [Float] = []
+            var ok = true
+            for d in raw {
+                let x = readFloat(d, off), y = readFloat(d, off + 4)
+                if !x.isFinite || !y.isFinite || abs(x) > 1e6 || abs(y) > 1e6 { ok = false; break }
+                xs.append(x); ys.append(y)
+            }
+            if !ok { continue }
+            let w = xs.max()! - xs.min()!, h = ys.max()! - ys.min()!
+            if w > 0.02, h > 0.02, w < 3.0, h < 3.0 {
+                if best == nil || (w + h) < (best!.w + best!.h) { best = (off, w, h) }
             }
         }
         guard let b = best else { return nil }
         var pts: [(Float, Float)] = []
         for d in raw { pts.append((readFloat(d, b.off), readFloat(d, b.off + 4))) }
+        if config.debug {
+            let line = String(format: "extract FALLBACK off=%d w=%.3f h=%.3f\n", b.off, b.w, b.h)
+            fputs(line, stderr)
+            if let fp = GestureController.debugFP { fputs(line, fp); fflush(fp) }
+        }
         return pts
     }
 
@@ -383,24 +400,33 @@ final class GestureController {
         // Straightness: 1.0 = perfectly straight drag, ~0 = begins and ends near same point.
         let straight = path > 1e-4 ? netDist / path : 0
 
-        if config.debug {
-            fputs(String(format: "classify dur=%.2f w=%.2f h=%.2f sweep=%.2f std=%.2f dlast=%.2f net=%.2f straight=%.2f\n",
-                         duration, w, h, sweep, std / meanR, dlast, netDist, straight), stderr)
-        }
+        // Decide the gesture, then log the metrics + result to both stderr and the
+        // debug file so the detection can be verified offline.
+        var result: String? = nil
 
         // Tap: short, tiny movement.
-        if duration < 0.35, w < 0.18, h < 0.18 { return "tap" }
-        // Circle: most of the loop traced, returns near start, roughly constant radius.
-        if meanR > 0.1, std / meanR < Float(config.maxRadiusStd),
-           sweep > Float(config.minAngularCoverage), dlast < Float(config.maxClosure) * meanR {
-            return "circle"
-        }
+        if duration < 0.35, w < 0.18, h < 0.18 { result = "tap" }
+        // Circle: most of the loop traced, roughly constant radius, and the path
+        // returns close to where it started *relative to its total length*. Using
+        // `straight` (= netDist / path) instead of an end-near-start distance means a
+        // single loop OR several loops drawn in one continuous stroke both classify
+        // as a circle (the start/end are far apart in a multi-loop stroke, but the
+        // net displacement is tiny compared with the long path).
+        else if meanR > 0.1, std / meanR < Float(config.maxRadiusStd),
+                sweep > Float(config.minAngularCoverage), straight < Float(config.maxClosure) { result = "circle" }
         // Swipe: a fairly straight drag with significant net movement.
-        if netDist > 0.12, straight > 0.75 {
-            if abs(netDx) > abs(netDy) { return netDx > 0 ? "swipeRight" : "swipeLeft" }
-            return netDy > 0 ? "swipeDown" : "swipeUp"
+        else if netDist > 0.12, straight > 0.75 {
+            if abs(netDx) > abs(netDy) { result = netDx > 0 ? "swipeRight" : "swipeLeft" }
+            else { result = netDy > 0 ? "swipeDown" : "swipeUp" }
         }
-        return nil
+
+        if config.debug {
+            let cls = String(format: "classify dur=%.2f w=%.2f h=%.2f sweep=%.2f std=%.2f dlast=%.2f net=%.2f straight=%.2f => %@\n",
+                             duration, w, h, sweep, std / meanR, dlast, netDist, straight, result ?? "nil")
+            fputs(cls, stderr)
+            if let fp = GestureController.debugFP { fputs(cls, fp); fflush(fp) }
+        }
+        return result
     }
 
     private func pathLength(_ pts: [(Float, Float)]) -> Float {
@@ -445,7 +471,9 @@ final class GestureController {
             up.flags = flags
             up.post(tap: .cghidEventTap)
         }
-        fputs(String(format: "FIRED gesture=%@ keyCode=%u flag=%@\n", name, keyCode, b.flag), stderr)
+        let fired = String(format: "FIRED gesture=%@ keyCode=%u flag=%@\n", name, keyCode, b.flag)
+        fputs(fired, stderr)
+        if let fp = GestureController.debugFP { fputs(fired, fp); fflush(fp) }
         DispatchQueue.main.async { self.onFire?(keyCode, name) }
     }
 
