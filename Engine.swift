@@ -193,22 +193,35 @@ final class GestureController {
             for i in 0..<count {
                 let dev = unsafeBitCast(CFArrayGetValueAtIndex(list, i), to: MTDeviceRef?.self)
                 if let dev = dev {
+                    let b = Multitouch.fnIsBuiltIn(dev)
+                    if b {
+                        // Skip built-in trackpads — we only want the EXTERNAL device
+                        // (the Magic Mouse). Mixing built-in touches corrupts the stroke.
+                        fputs(String(format: "skip built-in dev#%d\n", i), stderr)
+                        if let fp = GestureController.debugFP {
+                            fputs(String(format: "skip built-in dev#%d\n", i), fp); fflush(fp)
+                        }
+                        continue
+                    }
                     Multitouch.fnRegister(dev, Multitouch.cCallback)
                     let rc = Multitouch.fnStart(dev, 0)
-                    let b = Multitouch.fnIsBuiltIn(dev)
-                    fputs(String(format: "started dev#%d builtIn=%d rc=%d\n", i, b ? 1 : 0, rc), stderr)
+                    fputs(String(format: "started dev#%d builtIn=0 rc=%d\n", i, rc), stderr)
                     if let fp = GestureController.debugFP {
-                        fputs(String(format: "started dev#%d builtIn=%d rc=%d\n", i, b ? 1 : 0, rc), fp); fflush(fp)
+                        fputs(String(format: "started dev#%d builtIn=0 rc=%d\n", i, rc), fp); fflush(fp)
                     }
                     started.append(dev)
                 }
             }
         }
         if started.isEmpty {
+            // No external device found: fall back to the system default (last resort).
             if let d = Multitouch.fnCreateDefault() {
                 Multitouch.fnRegister(d, Multitouch.cCallback)
                 let rc = Multitouch.fnStart(d, 0)
                 fputs(String(format: "started default dev rc=%d\n", rc), stderr)
+                if let fp = GestureController.debugFP {
+                    fputs(String(format: "started default dev rc=%d\n", rc), fp); fflush(fp)
+                }
                 started.append(d)
             }
         }
@@ -261,7 +274,11 @@ final class GestureController {
             if strokeRaw.isEmpty {
                 strokeRaw.removeAll()
                 strokeStart = now
-            } else if (now - lastEndTS) > 0.25 {
+            } else if (now - lastTouchTS) > 0.5 {
+                // A long pause since the previous frame => this is a NEW stroke.
+                // NOTE: must compare against lastTouchTS (updated every frame), NOT
+                // lastEndTS (only updated at finalize) — the latter is stale during a
+                // continuous stroke and would wipe the buffer on every single frame.
                 strokeRaw.removeAll()
                 strokeStart = now
             }
@@ -283,7 +300,7 @@ final class GestureController {
             // Touch ended. Schedule finalize 0.12s later so it fires even if the
             // framework stops calling the callback after the lift.
             if !strokeRaw.isEmpty && finalizeTimer == nil {
-                finalizeTimer = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: false) { [weak self] _ in
+                finalizeTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
                     self?.finalizeTimer = nil
                     self?.finalizeStroke()
                 }
@@ -303,9 +320,17 @@ final class GestureController {
             let line = String(format: "finalize raw.count=%d\n", raw.count)
             fputs(line, stderr)
             if let fp = GestureController.debugFP { fputs(line, fp); fflush(fp) }
+            dumpStrokeDiagnostics(raw)
         }
         guard raw.count >= 2 else { return }
-        guard let pts = extractPoints(raw) else { return }
+        guard let pts = extractPoints(raw) else {
+            if config.debug {
+                let line = "  extractPoints -> nil\n"
+                fputs(line, stderr)
+                if let fp = GestureController.debugFP { fputs(line, fp); fflush(fp) }
+            }
+            return
+        }
         let duration = CFAbsoluteTimeGetCurrent() - strokeStart
         guard let name = classify(pts, duration: duration) else { return }
         lastGesture = name
@@ -317,59 +342,145 @@ final class GestureController {
         }
     }
 
+    // When debugging, dump the top offset pairs (by bounding-box area) AND a set of
+    // known candidate offsets, each with its value range and a downsampled trajectory.
+    // This makes the true normalized-position offset discoverable directly from the log.
+    private func dumpStrokeDiagnostics(_ raw: [Data]) {
+        let len = raw.first?.count ?? 0
+        guard len >= 8, raw.count >= 3 else { return }
+
+        func traj(_ a: Int, _ b: Int, _ maxPts: Int = 24) -> String {
+            let step = max(1, raw.count / maxPts)
+            var s = ""
+            for i in stride(from: 0, to: raw.count, by: step) {
+                s += String(format: " (%.2f,%.2f)", readFloat(raw[i], a), readFloat(raw[i], b))
+            }
+            return s
+        }
+
+        // All valid offset pairs (finite, not huge) grouped by area.
+        var cands: [(a: Int, b: Int, w: Float, h: Float, lo: Float, hi: Float)] = []
+        for a in stride(from: 0, through: len - 8, by: 4) {
+            for b in stride(from: a + 4, through: len - 4, by: 4) {
+                var xs: [Float] = [], ys: [Float] = []
+                var ok = true
+                for d in raw {
+                    let x = readFloat(d, a), y = readFloat(d, b)
+                    if !x.isFinite || !y.isFinite || abs(x) > 1e6 || abs(y) > 1e6 { ok = false; break }
+                    xs.append(x); ys.append(y)
+                }
+                if !ok { continue }
+                let w = xs.max()! - xs.min()!, h = ys.max()! - ys.min()!
+                guard w > 0.02, h > 0.02, w < 100, h < 100 else { continue }
+                let lo = min(xs.min()!, ys.min()!), hi = max(xs.max()!, ys.max()!)
+                cands.append((a, b, w, h, lo, hi))
+            }
+        }
+        cands.sort { ($0.w * $0.h) > ($1.w * $1.h) }
+
+        var s = String(format: "  stroke n=%d top8 by area:\n", raw.count)
+        for c in cands.prefix(8) {
+            s += String(format: "    (%d,%d) w=%.2f h=%.2f range[%.2f,%.2f]%@\n",
+                        c.a, c.b, c.w, c.h, c.lo, c.hi, traj(c.a, c.b))
+        }
+        // Also always show a fixed set of known/likely position offsets.
+        s += "  known offsets:\n"
+        for (a, b) in [(32,36),(20,24),(40,44),(48,52),(48,92),(60,64),(68,72),(68,92)] {
+            s += String(format: "    (%d,%d)%@\n", a, b, traj(a, b))
+        }
+        // Raw per-frame values for real multi-frame strokes (complete data to pin
+        // down the true position offset from a single clean gesture).
+        if raw.count <= 80 {
+            s += "  raw frames:\n"
+            for (i, d) in raw.enumerated() {
+                var line = String(format: "    f%d:", i)
+                for off in [8,12,20,24,28,32,36,40,44,48,52,56,60,64,68,72,76,80,92] {
+                    line += String(format: " %d:%.3f", off, readFloat(d, off))
+                }
+                s += line + "\n"
+            }
+        }
+        fputs(s, stderr)
+        if let fp = GestureController.debugFP { fputs(s, fp); fflush(fp) }
+    }
+
     // Locate the (x, y) float pair inside the touch struct.
-    // Empirically confirmed for this framework/device: the normalized touch POSITION
-    // is a float pair at byte offsets (32, 36). We try that first (and (20,24) as a
-    // secondary guess), then fall back to a full offset scan for other layouts.
+    // The Magic Mouse (and built-in trackpad) expose the normalized touch POSITION
+    // as a float pair in roughly [0,1]. We require the chosen pair to stay inside a
+    // plausible normalized range AND show real movement — this rejects the many other
+    // float fields (velocities, timestamps, kernel handles) whose magnitudes are huge
+    // (tens, thousands) and would otherwise dominate a plain "largest area" scan.
     private func extractPoints(_ raw: [Data]) -> [(Float, Float)]? {
         let len = raw.first?.count ?? 0
         guard len >= 40 else { return nil }
-        let candidates: [(ox: Int, oy: Int)] = [(32, 36), (20, 24)]
-        for c in candidates {
-            if c.ox + 4 >= len { continue }
-            var xs: [Float] = [], ys: [Float] = []
-            var ok = true
-            for d in raw {
-                let x = readFloat(d, c.ox), y = readFloat(d, c.oy)
-                if !x.isFinite || !y.isFinite || abs(x) > 1e6 || abs(y) > 1e6 { ok = false; break }
-                xs.append(x); ys.append(y)
-            }
-            if !ok { continue }
-            let w = xs.max()! - xs.min()!, h = ys.max()! - ys.min()!
-            if w > 0.02, h > 0.02 {
-                if config.debug {
-                    let line = String(format: "extract off=%d w=%.3f h=%.3f\n", c.ox, w, h)
-                    fputs(line, stderr)
-                    if let fp = GestureController.debugFP { fputs(line, fp); fflush(fp) }
+
+        // (32,36) is the confirmed normalized-position offset for this device; try it
+        // first, then (20,24) as a secondary guess. Using them in priority order (rather
+        // than by bounding-box area) avoids falling back to coarse/quantized fields.
+        for c in [(32, 36), (20, 24)] {
+            if let p = bestPair(raw, a: c.0, b: c.1, requireRange: true) {
+                if let pts = buildPoints(raw, ox: c.0, oy: c.1) {
+                    if config.debug {
+                        let line = String(format: "extract off=(%d,%d) w=%.3f h=%.3f\n", c.0, c.1, p.w, p.h)
+                        fputs(line, stderr)
+                        if let fp = GestureController.debugFP { fputs(line, fp); fflush(fp) }
+                    }
+                    return pts
                 }
-                return zip(xs, ys).map { ($0, $1) }
             }
         }
-        // Fallback: smallest coherent (0.02..3.0) bounding box across all offsets.
-        var best: (off: Int, w: Float, h: Float)? = nil
-        for off in stride(from: 0, through: len - 8, by: 4) {
-            var xs: [Float] = [], ys: [Float] = []
-            var ok = true
-            for d in raw {
-                let x = readFloat(d, off), y = readFloat(d, off + 4)
-                if !x.isFinite || !y.isFinite || abs(x) > 1e6 || abs(y) > 1e6 { ok = false; break }
-                xs.append(x); ys.append(y)
-            }
-            if !ok { continue }
-            let w = xs.max()! - xs.min()!, h = ys.max()! - ys.min()!
-            if w > 0.02, h > 0.02, w < 3.0, h < 3.0 {
-                if best == nil || (w + h) < (best!.w + best!.h) { best = (off, w, h) }
+        // Fallback: scan every 4-byte pair, constrained to the normalized range.
+        var best: (ox: Int, oy: Int, w: Float, h: Float)? = nil
+        for a in stride(from: 0, through: len - 8, by: 4) {
+            for b in stride(from: a + 4, through: len - 4, by: 4) {
+                guard let p = bestPair(raw, a: a, b: b, requireRange: true) else { continue }
+                let area = p.w * p.h
+                if best == nil || area > (best!.w * best!.h) { best = (a, b, p.w, p.h) }
             }
         }
-        guard let b = best else { return nil }
-        var pts: [(Float, Float)] = []
-        for d in raw { pts.append((readFloat(d, b.off), readFloat(d, b.off + 4))) }
+        guard let bst = best else { return nil }
+        guard let pts = buildPoints(raw, ox: bst.ox, oy: bst.oy) else { return nil }
         if config.debug {
-            let line = String(format: "extract FALLBACK off=%d w=%.3f h=%.3f\n", b.off, b.w, b.h)
+            let line = String(format: "extract FALLBACK off=(%d,%d) w=%.3f h=%.3f\n", bst.ox, bst.oy, bst.w, bst.h)
             fputs(line, stderr)
             if let fp = GestureController.debugFP { fputs(line, fp); fflush(fp) }
         }
         return pts
+    }
+
+    // Evaluate a single offset pair (or list) for a coherent normalized trajectory.
+    // Returns nil if any value is non-finite, huge, outside [−0.5, 1.5] (when
+    // requireRange is set), or the bounding box is degenerate.
+    private func bestPair(_ raw: [Data], a: Int, b: Int, requireRange: Bool) -> (ox: Int, oy: Int, w: Float, h: Float)? {
+        guard raw.allSatisfy({ $0.count > max(a, b) + 4 }) else { return nil }
+        var xs: [Float] = [], ys: [Float] = []
+        for d in raw {
+            let x = readFloat(d, a), y = readFloat(d, b)
+            if !x.isFinite || !y.isFinite || abs(x) > 1e6 || abs(y) > 1e6 { return nil }
+            xs.append(x); ys.append(y)
+        }
+        let w = xs.max()! - xs.min()!, h = ys.max()! - ys.min()!
+        // Require real movement in at least one axis (a swipe can be thin in the other).
+        guard max(w, h) > 0.12 else { return nil }
+        if requireRange {
+            let lo = min(xs.min()!, ys.min()!), hi = max(xs.max()!, ys.max()!)
+            guard lo >= -0.5, hi <= 1.5 else { return nil }
+        }
+        return (a, b, w, h)
+    }
+
+    private func bestPair(_ raw: [Data], offsets: [(ox: Int, oy: Int)], requireRange: Bool) -> (ox: Int, oy: Int, w: Float, h: Float)? {
+        var best: (ox: Int, oy: Int, w: Float, h: Float)? = nil
+        for c in offsets {
+            guard let p = bestPair(raw, a: c.ox, b: c.oy, requireRange: requireRange) else { continue }
+            if best == nil || (p.w * p.h) > (best!.w * best!.h) { best = p }
+        }
+        return best
+    }
+
+    private func buildPoints(_ raw: [Data], ox: Int, oy: Int) -> [(Float, Float)]? {
+        guard raw.allSatisfy({ $0.count > max(ox, oy) + 4 }) else { return nil }
+        return raw.map { (readFloat($0, ox), readFloat($0, oy)) }
     }
 
     private func classify(_ pts: [(Float, Float)], duration: Double) -> String? {
