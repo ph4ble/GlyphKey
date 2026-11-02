@@ -29,7 +29,4 @@ probe.swift
 _CodeSignature/
 
 # Release packaging
- dist/
-
-# Release packaging
 dist/
