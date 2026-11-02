@@ -1,4 +1,6 @@
 # Build artifacts (produced by build.sh)
+GlyphKey
+GlyphKey.app/
 MouseGestureKey
 MouseGestureKey.app/
 
@@ -18,3 +20,7 @@ mousegesturekey.log
 # Xcode / Swift build intermediates
 .build/
 *.o
+
+# Dev scratch tools
+probe
+probe.swift

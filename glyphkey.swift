@@ -1,4 +1,4 @@
-// CLI entry point for MouseGestureKey (terminal / debugging use).
+// CLI entry point for GlyphKey (terminal / debugging use).
 // The .app version lives in MouseGestureApp.swift.
 
 import Foundation
@@ -15,7 +15,7 @@ final class CLI {
         }
 
         controller.start()
-        fputs("MouseGestureKey is running. Draw a circle on your Magic Mouse to trigger the key.\n", stderr)
+        fputs("GlyphKey is running. Draw a gesture on your Magic Mouse to trigger the key.\n", stderr)
         fputs("Press Ctrl+C to stop.\n", stderr)
 
         // Keep the process alive until Ctrl+C.

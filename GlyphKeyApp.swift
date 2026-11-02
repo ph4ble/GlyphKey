@@ -2,7 +2,7 @@
 // settings window (pure AppKit, no SwiftUI) for managing custom gesture → key
 // mappings, live status, and permissions.
 //
-// Build target: compile together with Engine.swift into MouseGestureKey.app.
+// Build target: compile together with Engine.swift into GlyphKey.app.
 
 import AppKit
 import ApplicationServices
@@ -435,7 +435,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func setupStatusItem() {
         if let btn = statusItem.button {
             btn.title = "🖱️"
-            btn.toolTip = "鼠标手势按键"
+            btn.toolTip = "GlyphKey 指诀"
         }
         refreshMenu()
     }
@@ -485,7 +485,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settingsVC = vc
         let win = NSWindow(contentViewController: vc)
         win.styleMask = [.titled, .closable, .resizable]
-        win.title = "鼠标手势按键 - 设置"
+        win.title = "GlyphKey 指诀 — 设置"
         win.setContentSize(NSSize(width: 560, height: 780))
         win.minSize = NSSize(width: 520, height: 420)
         win.center()
@@ -622,9 +622,18 @@ final class Launcher: NSObject {
             let vc = SettingsViewController()
             let stack = vc.buildContent()
             vc.refreshLive()
+            // Fake a healthy running state so the render is a clean README screenshot.
+            vc.deviceVal.stringValue = "已连接（外部 Magic Mouse）"
+            vc.frameVal.stringValue = "1718（在涨 = 手势读取正常）"
+            vc.gestureVal.stringValue = "circle"
+            vc.axVal.stringValue = "已授权 ✓"
+            vc.axVal.textColor = .systemGreen
             let host = NSView(frame: NSRect(x: 0, y: 0, width: 560, height: 200))
+            host.appearance = NSAppearance(named: .aqua)   // light render for the README
             host.wantsLayer = true
-            host.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+            host.effectiveAppearance.performAsCurrentDrawingAppearance {
+                host.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+            }
             stack.translatesAutoresizingMaskIntoConstraints = false
             host.addSubview(stack)
             NSLayoutConstraint.activate([

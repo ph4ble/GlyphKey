@@ -3,24 +3,28 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>MouseGestureKey</string>
+    <string>GlyphKey</string>
     <key>CFBundleDisplayName</key>
-    <string>鼠标手势按键</string>
+    <string>GlyphKey 指诀</string>
     <key>CFBundleExecutable</key>
-    <string>MouseGestureKey</string>
+    <string>GlyphKey</string>
     <key>CFBundleIdentifier</key>
     <string>com.user.mousegesturekey</string>
     <key>CFBundleVersion</key>
-    <string>1.0</string>
+    <string>1.0.0</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>1.0.0</string>
+    <key>CFBundleGetInfoString</key>
+    <string>GlyphKey — draw a gesture on your Apple mouse, send a key.</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>MIT License · GlyphKey contributors</string>
     <key>LSMinimumSystemVersion</key>
     <string>11.0</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
-	<key>NSAppleEventsUsageDescription</key>
-	<string>需要辅助功能权限以读取鼠标手势并发送按键</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>需要辅助功能权限以读取鼠标手势并发送按键</string>
 </dict>
 </plist>
