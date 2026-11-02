@@ -6,6 +6,7 @@
 
 import AppKit
 import ApplicationServices
+import ServiceManagement
 
 // Preset keys the user can pick in the settings UI.
 let KEY_PRESETS: [(title: String, keyCode: UInt16, flag: String)] = [
@@ -68,6 +69,7 @@ class SettingsViewController: NSViewController {
     var bindingsHost: NSStackView!
     var bindingsGrid: NSGridView?
     var debugToggle: NSButton!
+    var launchToggle: NSButton!
     var closureSlider: NSSlider!
     var closureVal: NSTextField!
     var roundnessSlider: NSSlider!
@@ -188,6 +190,13 @@ class SettingsViewController: NSViewController {
         holdField.target = self; holdField.action = #selector(holdChanged)
         stack.addArrangedSubview(hstack([mkLabel("按住时长（秒，0=瞬时点按）", size: 12), holdField], spacing: 10))
 
+        // ---- 启动 ----
+        addWide(hSeparator(), to: stack)
+        addWide(sectionTitle("启动"), to: stack)
+        launchToggle = NSButton(checkboxWithTitle: "开机自动启动（登录后自动在后台运行）", target: self, action: #selector(launchChanged))
+        launchToggle.state = launchAtLoginEnabled() ? .on : .off
+        stack.addArrangedSubview(launchToggle)
+
         // ---- 手势灵敏度 ----
         addWide(hSeparator(), to: stack)
         addWide(sectionTitle("手势灵敏度", "数值越大越灵敏，也越容易误触"), to: stack)
@@ -301,6 +310,27 @@ class SettingsViewController: NSViewController {
     }
     @objc func debugChanged(_ s: NSButton) {
         commit { $0.debug = (s.state == .on) }
+    }
+    @objc func launchChanged(_ s: NSButton) {
+        let want = (s.state == .on)
+        let r = setLaunchAtLogin(want)
+        if !r.ok {
+            s.state = want ? .off : .on
+            let alert = NSAlert()
+            alert.messageText = "设置开机启动失败"
+            alert.informativeText = r.message
+            alert.alertStyle = .warning
+            alert.runModal()
+        } else {
+            s.state = launchAtLoginEnabled() ? .on : .off
+            if !r.message.isEmpty {
+                let alert = NSAlert()
+                alert.messageText = "开机启动"
+                alert.informativeText = r.message
+                alert.alertStyle = .informational
+                alert.runModal()
+            }
+        }
     }
     @objc func holdChanged(_ s: NSTextField) {
         commit { $0.holdSeconds = Double(s.stringValue) ?? 0 }
@@ -491,6 +521,90 @@ func openInputMonitoringPrefs() {
     let fallback = URL(string: "x-apple.systempreferences:com.apple.preference.security")!
     let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_InputMonitoring") ?? fallback
     NSWorkspace.shared.open(url)
+}
+
+// ---------------------------------------------------------------------------
+// Launch at login
+// ---------------------------------------------------------------------------
+private let launchAgentLabel = "com.user.mousegesturekey"
+
+private var launchAgentURL: URL {
+    FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/LaunchAgents/\(launchAgentLabel).plist")
+}
+
+// True if the app is currently set to launch at login (either mechanism).
+func launchAtLoginEnabled() -> Bool {
+    if #available(macOS 13.0, *) {
+        if SMAppService.mainApp.status == .enabled { return true }
+    }
+    return FileManager.default.fileExists(atPath: launchAgentURL.path)
+}
+
+// Enable/disable launch-at-login. Prefers the modern SMAppService (shows up in
+// System Settings → General → Login Items); falls back to a per-user LaunchAgent
+// when SMAppService is unavailable or refuses (e.g. app not in /Applications).
+@discardableResult
+func setLaunchAtLogin(_ enabled: Bool) -> (ok: Bool, message: String) {
+    if #available(macOS 13.0, *) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            // register() can leave the item "pending approval"; report it.
+            if enabled && SMAppService.mainApp.status == .requiresApproval {
+                return (true, "已登记，需在『系统设置 → 通用 → 登录项』中允许本 App")
+            }
+            return (true, "")
+        } catch {
+            if !enabled { return (true, "") }   // nothing to unregister
+            // fall through to LaunchAgent fallback
+        }
+    }
+    return setLaunchAgent(enabled)
+}
+
+private func setLaunchAgent(_ enabled: Bool) -> (ok: Bool, message: String) {
+    let fm = FileManager.default
+    if enabled {
+        let exe = Bundle.main.executablePath ?? CommandLine.arguments.first ?? ""
+        guard !exe.isEmpty else { return (false, "无法定位可执行文件") }
+        let plist: [String: Any] = [
+            "Label": launchAgentLabel,
+            "ProgramArguments": [exe],
+            "RunAtLoad": true,
+            "KeepAlive": false,
+            "ProcessType": "Interactive",
+        ]
+        guard let data = try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0) else {
+            return (false, "无法生成启动项配置")
+        }
+        do {
+            try fm.createDirectory(at: launchAgentURL.deletingLastPathComponent(),
+                                   withIntermediateDirectories: true)
+            try data.write(to: launchAgentURL)
+        } catch {
+            return (false, error.localizedDescription)
+        }
+        runLaunchctl(["load", "-w", launchAgentURL.path])
+        return (true, "")
+    } else {
+        if fm.fileExists(atPath: launchAgentURL.path) {
+            runLaunchctl(["unload", "-w", launchAgentURL.path])
+            try? fm.removeItem(at: launchAgentURL)
+        }
+        return (true, "")
+    }
+}
+
+private func runLaunchctl(_ args: [String]) {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+    p.arguments = args
+    try? p.run()
+    p.waitUntilExit()
 }
 
 // ---------------------------------------------------------------------------

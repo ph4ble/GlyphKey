@@ -14,6 +14,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 swiftc -swift-version 5 -O \
     -framework AppKit -framework ApplicationServices \
+    -framework ServiceManagement \
     -framework CoreGraphics -framework CoreFoundation \
     Engine.swift MouseGestureApp.swift -o "$BIN"
 
