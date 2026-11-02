@@ -446,23 +446,16 @@ final class GestureController {
                 }
             }
         }
-        // Fallback: scan every 4-byte pair, constrained to the normalized range.
-        var best: (ox: Int, oy: Int, w: Float, h: Float)? = nil
-        for a in stride(from: 0, through: len - 8, by: 4) {
-            for b in stride(from: a + 4, through: len - 4, by: 4) {
-                guard let p = bestPair(raw, a: a, b: b, requireRange: true) else { continue }
-                let area = p.w * p.h
-                if best == nil || area > (best!.w * best!.h) { best = (a, b, p.w, p.h) }
-            }
-        }
-        guard let bst = best else { return nil }
-        guard let pts = buildPoints(raw, ox: bst.ox, oy: bst.oy) else { return nil }
+        // No real movement in the confirmed position field => this is a tap / noise,
+        // NOT a gesture. Do NOT fall back to other offset pairs: fields like (48,92)
+        // are a coarse, quantized value that can trace a fake "circle" out of a light
+        // click, which was the source of click false-positives.
         if config.debug {
-            let line = String(format: "extract FALLBACK off=(%d,%d) w=%.3f h=%.3f\n", bst.ox, bst.oy, bst.w, bst.h)
+            let line = "extract NONE (no real movement in (32,36)/(20,24))\n"
             fputs(line, stderr)
             if let fp = GestureController.debugFP { fputs(line, fp); fflush(fp) }
         }
-        return pts
+        return nil
     }
 
     // Evaluate a single offset pair (or list) for a coherent normalized trajectory.
@@ -511,12 +504,14 @@ final class GestureController {
         var radii: [Float] = [], angles: [Float] = []
         for p in norm { radii.append(hypot(p.0 - cx, p.1 - cy)); angles.append(atan2(p.1 - cy, p.0 - cx)) }
         let meanR = radii.reduce(0, +) / Float(radii.count)
-        var sweep: Float = 0
+        var sweep: Float = 0      // total absolute angular travel
+        var netSweep: Float = 0   // signed net rotation (≈0 for back-and-forth noise)
         for i in 1..<angles.count {
             var d = angles[i] - angles[i - 1]
             while d > .pi { d -= 2 * .pi }
             while d < -.pi { d += 2 * .pi }
             sweep += abs(d)
+            netSweep += d
         }
         let variance = radii.reduce(0) { $0 + ($1 - meanR) * ($1 - meanR) } / Float(radii.count)
         let std = sqrt(variance)
@@ -534,15 +529,16 @@ final class GestureController {
 
         // Tap: short, tiny movement.
         if duration < 0.35, w < 0.18, h < 0.18 { result = "tap" }
-        // Circle: a roughly round, reasonably sized loop traced ~1–2.5 times.
-        // The size / aspect-ratio / sweep bounds are what reject noisy "click"
-        // strokes: a tiny jitter around the centroid can inflate sweep and look
-        // circular, but it can't fill a round, reasonably sized bounding box.
+        // Circle: a roughly round, reasonably sized loop traced in ONE consistent
+        // direction. We use the SIGNED net rotation (netSweep) for coverage and
+        // require it to be most of the absolute angular travel (sweep) — noise jitters
+        // back and forth (large sweep, tiny netSweep) and is rejected. Size / aspect
+        // bounds additionally reject tiny clicks.
         else if meanR > 0.12,
                 w > 0.15, h > 0.15,
                 min(w, h) / max(w, h) > 0.4,
-                sweep > Float(config.minAngularCoverage),
-                sweep < 20,
+                abs(netSweep) > Float(config.minAngularCoverage),
+                abs(netSweep) > 0.7 * sweep,
                 std / meanR < Float(config.maxRadiusStd),
                 straight < Float(config.maxClosure) { result = "circle" }
         // Swipe: a fairly straight drag with significant net movement.
@@ -552,8 +548,8 @@ final class GestureController {
         }
 
         if config.debug {
-            let cls = String(format: "classify dur=%.2f w=%.2f h=%.2f sweep=%.2f std=%.2f dlast=%.2f net=%.2f straight=%.2f => %@\n",
-                             duration, w, h, sweep, std / meanR, dlast, netDist, straight, result ?? "nil")
+            let cls = String(format: "classify dur=%.2f w=%.2f h=%.2f sweep=%.2f net=%.2f std=%.2f dlast=%.2f straight=%.2f => %@\n",
+                             duration, w, h, sweep, netSweep, std / meanR, dlast, straight, result ?? "nil")
             fputs(cls, stderr)
             if let fp = GestureController.debugFP { fputs(cls, fp); fflush(fp) }
         }
@@ -626,14 +622,23 @@ final class GestureController {
         let arc = gen(20, Double.pi)
         var line: [(Float, Float)] = []
         for i in 0..<30 { line.append((Float(0.1 + 0.8 * Double(i) / 29), 0.5)) }
+        // Back-and-forth jitter: large angular travel but ~zero net rotation (the
+        // "light click noise" pattern that used to be misread as a circle).
+        var jitter: [(Float, Float)] = []
+        for i in 0..<50 {
+            let a = Float(2.5 * sin(Double(i) * 0.8))
+            jitter.append((0.5 + 0.15 * cos(a), 0.5 + 0.15 * sin(a)))
+        }
         let r1 = c.classify(full, duration: 1.0)
         let r2 = c.classify(arc, duration: 0.7)
         let r3 = c.classify(line, duration: 0.5)
+        let r4 = c.classify(jitter, duration: 1.0)
         print("selftest full-circle => \(r1 == "circle" ? "circle ✓" : "\(String(describing: r1)) ✗") (expect circle)")
         print("selftest half-arc    => \(r2 == nil ? "nil ✓" : "\(String(describing: r2)) ✗") (expect nil)")
         let r3ok = (r3 == "swipeRight" || r3 == "swipeLeft")
         print("selftest line        => \(r3ok ? "\(r3!) ✓" : "\(String(describing: r3)) ✗") (expect a swipe)")
-        let ok = r1 == "circle" && r2 == nil && r3ok
+        print("selftest jitter      => \(r4 != "circle" ? "\(String(describing: r4)) ✓" : "circle ✗") (expect NOT circle)")
+        let ok = r1 == "circle" && r2 == nil && r3ok && r4 != "circle"
         print(ok ? "SELFTEST PASS" : "SELFTEST FAIL")
     }
 }
