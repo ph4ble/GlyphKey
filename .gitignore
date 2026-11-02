@@ -24,3 +24,6 @@ mousegesturekey.log
 # Dev scratch tools
 probe
 probe.swift
+
+# Stray codesign output
+_CodeSignature/
