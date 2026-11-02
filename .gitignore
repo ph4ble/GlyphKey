@@ -27,3 +27,9 @@ probe.swift
 
 # Stray codesign output
 _CodeSignature/
+
+# Release packaging
+ dist/
+
+# Release packaging
+dist/

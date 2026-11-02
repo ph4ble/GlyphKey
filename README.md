@@ -63,6 +63,8 @@ sh build.sh
 - **图形界面版（推荐）**：`open GlyphKey.app`，或直接双击 `GlyphKey.app`。启动后设置窗口自动弹出，菜单栏出现 🖱️ 图标。
 - **命令行版（调试用）**：`./GlyphKey`。
 
+> 🍎 **从 Releases 下载的 App 首次打不开？** 本项目未做 Apple 公证（notarization），Gatekeeper 可能拦截。请**右键点 App → 打开**，或到「系统设置 → 隐私与安全性」底部点「仍要打开」。之后就能正常双击运行。
+
 ---
 
 ## 🔐 权限（最关键，没授权就「没反应」）
