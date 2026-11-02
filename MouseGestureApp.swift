@@ -19,15 +19,45 @@ let KEY_PRESETS: [(title: String, keyCode: UInt16, flag: String)] = [
     ("右侧 Shift (⇧)",    0x3C, "rightShift"),
 ]
 
-func label(_ s: String, secondary: Bool = false) -> NSTextField {
+// Text label with full control over size / weight / color. Wraps by word.
+func mkLabel(_ s: String, size: CGFloat = 13, weight: NSFont.Weight = .regular,
+             color: NSColor = .labelColor) -> NSTextField {
     let f = NSTextField(labelWithString: s)
-    if secondary {
-        f.font = NSFont.systemFont(ofSize: 11)
-        f.textColor = .secondaryLabelColor
-    }
+    f.font = .systemFont(ofSize: size, weight: weight)
+    f.textColor = color
     f.lineBreakMode = .byWordWrapping
-    f.preferredMaxLayoutWidth = 420
+    f.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     return f
+}
+
+func hstack(_ views: [NSView], spacing: CGFloat,
+            align: NSLayoutConstraint.Attribute = .centerY) -> NSStackView {
+    let s = NSStackView(views: views)
+    s.orientation = .horizontal
+    s.alignment = align
+    s.spacing = spacing
+    return s
+}
+
+func vstack(_ views: [NSView], spacing: CGFloat,
+            align: NSLayoutConstraint.Attribute = .leading) -> NSStackView {
+    let s = NSStackView(views: views)
+    s.orientation = .vertical
+    s.alignment = align
+    s.spacing = spacing
+    return s
+}
+
+func hSeparator() -> NSBox {
+    let b = NSBox()
+    b.boxType = .separator
+    return b
+}
+
+// A top-anchored container for the scroll view's document content, so a short
+// document sits at the TOP instead of the bottom (AppKit's default).
+final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
 }
 
 // ---------------------------------------------------------------------------
@@ -35,136 +65,211 @@ func label(_ s: String, secondary: Bool = false) -> NSTextField {
 // ---------------------------------------------------------------------------
 class SettingsViewController: NSViewController {
     let controller = GestureController.shared
-    var bindingsStack: NSStackView!
-    var statusBox: NSTextField!
+    var bindingsHost: NSStackView!
+    var bindingsGrid: NSGridView?
+    var debugToggle: NSButton!
     var closureSlider: NSSlider!
     var closureVal: NSTextField!
     var roundnessSlider: NSSlider!
     var roundnessVal: NSTextField!
-    var debugToggle: NSButton!
+    var deviceVal: NSTextField!
+    var frameVal: NSTextField!
+    var gestureVal: NSTextField!
+    var axVal: NSTextField!
+    var imVal: NSTextField!
+
+    // ---- layout helpers -------------------------------------------------
+    private func sectionTitle(_ t: String, _ sub: String? = nil) -> NSView {
+        let title = mkLabel(t, size: 14, weight: .semibold)
+        guard let sub = sub else { return title }
+        return vstack([title, mkLabel(sub, size: 11, color: .secondaryLabelColor)], spacing: 3, align: .leading)
+    }
+
+    // Add a view that spans the full content width (so separators, sliders and
+    // wrapping labels stretch instead of hugging their intrinsic width).
+    private func addWide(_ v: NSView, to stack: NSStackView) {
+        stack.addArrangedSubview(v)
+        v.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+    }
+
+    private func statusRow(_ key: String, _ value: NSTextField) -> NSView {
+        let k = mkLabel(key, size: 12, color: .secondaryLabelColor)
+        k.setContentHuggingPriority(.required, for: .horizontal)
+        k.setContentCompressionResistancePriority(.required, for: .horizontal)
+        k.widthAnchor.constraint(equalToConstant: 86).isActive = true
+        return hstack([k, value], spacing: 12, align: .top)
+    }
+
+    private func sliderRow(_ title: String, _ slider: NSSlider, _ value: NSTextField) -> NSView {
+        let t = mkLabel(title, size: 12)
+        t.setContentHuggingPriority(.required, for: .horizontal)
+        t.setContentCompressionResistancePriority(.required, for: .horizontal)
+        t.widthAnchor.constraint(equalToConstant: 86).isActive = true
+        return hstack([t, slider, value], spacing: 12)
+    }
 
     override func loadView() {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 500, height: 640))
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 560, height: 780))
 
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
         scroll.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(scroll)
         NSLayoutConstraint.activate([
-            scroll.topAnchor.constraint(equalTo: root.topAnchor, constant: 12),
-            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
-            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
-            scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
+            scroll.topAnchor.constraint(equalTo: root.topAnchor),
+            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
 
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.spacing = 10
-        stack.alignment = .leading
+        // Flipped document view => short content anchors at the TOP (no big top gap).
+        let doc = FlippedView()
+        doc.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = doc
+
+        let stack = buildContent()
         stack.translatesAutoresizingMaskIntoConstraints = false
-        scroll.documentView = stack
-        stack.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor).isActive = true
-
-        // Live status
-        stack.addArrangedSubview(label("实时状态"))
-        statusBox = NSTextField(labelWithString: "初始化中…")
-        statusBox.font = NSFont.systemFont(ofSize: 11)
-        statusBox.textColor = .secondaryLabelColor
-        statusBox.lineBreakMode = .byWordWrapping
-        statusBox.preferredMaxLayoutWidth = 460
-        stack.addArrangedSubview(statusBox)
-
-        // Bindings
-        stack.addArrangedSubview(label("手势 → 按键 映射（可添加多个，自定义手势）"))
-        bindingsStack = NSStackView()
-        bindingsStack.orientation = .vertical
-        bindingsStack.spacing = 6
-        bindingsStack.alignment = .leading
-        stack.addArrangedSubview(bindingsStack)
-        let addBtn = NSButton(title: "＋ 添加手势", target: self, action: #selector(addBinding))
-        stack.addArrangedSubview(addBtn)
-        rebuildBindings()
-
-        // Trigger options
-        stack.addArrangedSubview(label("触发方式"))
-        debugToggle = NSButton(checkboxWithTitle: "调试模式（在终端输出原始触控数据，便于排查）", target: self, action: #selector(debugChanged))
-        debugToggle.state = controller.config.debug ? .on : .off
-        stack.addArrangedSubview(debugToggle)
-
-        let holdField = NSTextField()
-        holdField.stringValue = String(format: "%.2f", controller.config.holdSeconds)
-        holdField.widthAnchor.constraint(equalToConstant: 80).isActive = true
-        let nf = NumberFormatter(); nf.minimum = 0; nf.maximum = 60; nf.numberStyle = .decimal
-        holdField.formatter = nf
-        holdField.target = self; holdField.action = #selector(holdChanged)
-        let holdRow = NSStackView(views: [label("按住时长（秒，0=瞬时点按）"), holdField])
-        holdRow.spacing = 8
-        stack.addArrangedSubview(holdRow)
-
-        // Sensitivity
-        stack.addArrangedSubview(label("手势灵敏度（数值越大越灵敏，也更容易误触）"))
-        closureSlider = NSSlider(value: controller.config.maxClosure, minValue: 0.20, maxValue: 0.80, target: self, action: #selector(closureDone))
-        closureSlider.isContinuous = false   // commit only on release (avoids hammering config)
-        closureSlider.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        closureVal = label("")
-        let closureRow = NSStackView(views: [closureSlider, closureVal]); closureRow.spacing = 8
-        stack.addArrangedSubview(closureRow)
-        roundnessSlider = NSSlider(value: controller.config.maxRadiusStd, minValue: 0.30, maxValue: 0.90, target: self, action: #selector(roundnessDone))
-        roundnessSlider.isContinuous = false
-        roundnessSlider.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        roundnessVal = label("")
-        let roundRow = NSStackView(views: [roundnessSlider, roundnessVal]); roundRow.spacing = 8
-        stack.addArrangedSubview(roundRow)
-        closureChanged(); roundnessChanged()
-
-        // Buttons
-        let testBtn = NSButton(title: "测试触发（验证按键是否发送）", target: self, action: #selector(testTrigger))
-        let revealBtn = NSButton(title: "在访达中显示本 App", target: self, action: #selector(revealInFinder))
-        let row1 = NSStackView(views: [testBtn, revealBtn]); row1.spacing = 8
-        stack.addArrangedSubview(row1)
-
-        let axPaneBtn = NSButton(title: "打开辅助功能设置", target: self, action: #selector(openAXPrefs))
-        let imPaneBtn = NSButton(title: "打开输入监控设置", target: self, action: #selector(openIMPrefs))
-        let row2 = NSStackView(views: [axPaneBtn, imPaneBtn]); row2.spacing = 8
-        stack.addArrangedSubview(row2)
-
-        let hint = label("授权步骤：① 点上面按钮打开对应设置页 → ② 点左下角 ＋ 把本 App 加进去并打勾 → ③ 菜单栏🖱️退出后重新打开本 App（权限改完要重启才生效）。", secondary: true)
-        stack.addArrangedSubview(hint)
+        doc.addSubview(stack)
+        NSLayoutConstraint.activate([
+            doc.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            doc.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
+            doc.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+            stack.topAnchor.constraint(equalTo: doc.topAnchor, constant: 22),
+            stack.leadingAnchor.constraint(equalTo: doc.leadingAnchor, constant: 22),
+            stack.trailingAnchor.constraint(equalTo: doc.trailingAnchor, constant: -22),
+            stack.bottomAnchor.constraint(equalTo: doc.bottomAnchor, constant: -22),
+        ])
 
         self.view = root
         refreshLive()
     }
 
-    func rebuildBindings() {
-        bindingsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for i in 0..<controller.config.bindings.count {
-            bindingsStack.addArrangedSubview(bindingRow(index: i))
-        }
+    // Builds the scrollable content (all sections). Shared by the live window and
+    // the --snapshot renderer.
+    func buildContent() -> NSStackView {
+        let stack = vstack([], spacing: 18, align: .leading)
+        // ---- 实时状态 ----
+        addWide(sectionTitle("实时状态"), to: stack)
+        deviceVal = mkLabel("—", size: 12)
+        frameVal = mkLabel("—", size: 12)
+        gestureVal = mkLabel("—", size: 12)
+        axVal = mkLabel("—", size: 12)
+        imVal = mkLabel("—", size: 12)
+        addWide(statusRow("设备", deviceVal), to: stack)
+        addWide(statusRow("已捕获帧数", frameVal), to: stack)
+        addWide(statusRow("最近识别", gestureVal), to: stack)
+        addWide(statusRow("辅助功能", axVal), to: stack)
+        addWide(statusRow("输入监控", imVal), to: stack)
+
+        // ---- 手势 → 按键映射 ----
+        addWide(hSeparator(), to: stack)
+        addWide(sectionTitle("手势 → 按键映射", "支持添加多个；画出对应手势即触发所选按键"), to: stack)
+        bindingsHost = vstack([], spacing: 10, align: .leading)
+        stack.addArrangedSubview(bindingsHost)
+        let addBtn = NSButton(title: "＋ 添加手势", target: self, action: #selector(addBinding))
+        addBtn.bezelStyle = .rounded
+        stack.addArrangedSubview(addBtn)
+        rebuildBindings()
+
+        // ---- 触发方式 ----
+        addWide(hSeparator(), to: stack)
+        addWide(sectionTitle("触发方式"), to: stack)
+        debugToggle = NSButton(checkboxWithTitle: "调试模式（记录原始触控数据，便于排查）", target: self, action: #selector(debugChanged))
+        debugToggle.state = controller.config.debug ? .on : .off
+        stack.addArrangedSubview(debugToggle)
+
+        let holdField = NSTextField()
+        holdField.stringValue = String(format: "%.2f", controller.config.holdSeconds)
+        holdField.alignment = .right
+        holdField.widthAnchor.constraint(equalToConstant: 64).isActive = true
+        let nf = NumberFormatter(); nf.minimum = 0; nf.maximum = 60; nf.numberStyle = .decimal
+        holdField.formatter = nf
+        holdField.target = self; holdField.action = #selector(holdChanged)
+        stack.addArrangedSubview(hstack([mkLabel("按住时长（秒，0=瞬时点按）", size: 12), holdField], spacing: 10))
+
+        // ---- 手势灵敏度 ----
+        addWide(hSeparator(), to: stack)
+        addWide(sectionTitle("手势灵敏度", "数值越大越灵敏，也越容易误触"), to: stack)
+        closureSlider = NSSlider(value: controller.config.maxClosure, minValue: 0.20, maxValue: 0.80, target: self, action: #selector(closureDone))
+        closureSlider.isContinuous = false
+        closureSlider.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        closureSlider.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        closureVal = mkLabel("", size: 12); closureVal.alignment = .right
+        closureVal.widthAnchor.constraint(equalToConstant: 42).isActive = true
+        addWide(sliderRow("闭合容差", closureSlider, closureVal), to: stack)
+
+        roundnessSlider = NSSlider(value: controller.config.maxRadiusStd, minValue: 0.30, maxValue: 0.90, target: self, action: #selector(roundnessDone))
+        roundnessSlider.isContinuous = false
+        roundnessSlider.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        roundnessSlider.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        roundnessVal = mkLabel("", size: 12); roundnessVal.alignment = .right
+        roundnessVal.widthAnchor.constraint(equalToConstant: 42).isActive = true
+        addWide(sliderRow("圆度要求", roundnessSlider, roundnessVal), to: stack)
+        closureChanged(); roundnessChanged()
+
+        // ---- 操作 ----
+        addWide(hSeparator(), to: stack)
+        addWide(sectionTitle("操作"), to: stack)
+        let testBtn = NSButton(title: "测试触发", target: self, action: #selector(testTrigger))
+        let revealBtn = NSButton(title: "在访达中显示 App", target: self, action: #selector(revealInFinder))
+        stack.addArrangedSubview(hstack([testBtn, revealBtn], spacing: 10))
+        let axBtn = NSButton(title: "打开辅助功能设置", target: self, action: #selector(openAXPrefs))
+        let imBtn = NSButton(title: "打开输入监控设置", target: self, action: #selector(openIMPrefs))
+        stack.addArrangedSubview(hstack([axBtn, imBtn], spacing: 10))
+
+        let hint = mkLabel("授权步骤：① 点上方按钮打开对应设置页 → ② 点左下角 ＋ 把本 App 加入并打勾 → ③ 从菜单栏 🖱️ 退出后重新打开本 App（权限改完要重启才生效）。", size: 11, color: .secondaryLabelColor)
+        addWide(hint, to: stack)
+
+        return stack
     }
 
-    func bindingRow(index: Int) -> NSView {
+    func rebuildBindings() {
+        bindingsHost.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        var rows: [[NSView]] = [[
+            mkLabel("手势", size: 11, color: .secondaryLabelColor),
+            mkLabel("按键", size: 11, color: .secondaryLabelColor),
+            mkLabel("启用", size: 11, color: .secondaryLabelColor),
+            mkLabel("", size: 11, color: .secondaryLabelColor),
+        ]]
+        for i in 0..<controller.config.bindings.count {
+            rows.append(bindingCells(index: i))
+        }
+        let grid = NSGridView(views: rows)
+        grid.rowSpacing = 8
+        grid.columnSpacing = 10
+        grid.column(at: 0).xPlacement = .leading
+        grid.column(at: 1).xPlacement = .leading
+        grid.column(at: 2).xPlacement = .center
+        grid.column(at: 3).xPlacement = .trailing
+        grid.translatesAutoresizingMaskIntoConstraints = false
+        bindingsHost.addArrangedSubview(grid)
+        bindingsGrid = grid
+    }
+
+    func bindingCells(index: Int) -> [NSView] {
         let b = controller.config.bindings[index]
-        let row = NSStackView()
-        row.spacing = 6
 
         let gp = NSPopUpButton()
         for g in GESTURE_TYPES { gp.addItem(withTitle: g.label) }
         if let gi = GESTURE_TYPES.firstIndex(where: { $0.id == b.gesture }) { gp.selectItem(at: gi) }
         gp.tag = index; gp.target = self; gp.action = #selector(gpChanged)
+        gp.widthAnchor.constraint(equalToConstant: 148).isActive = true
 
         let kp = NSPopUpButton()
         for p in KEY_PRESETS { kp.addItem(withTitle: p.title) }
         if let ki = KEY_PRESETS.firstIndex(where: { $0.keyCode == b.keyCode && $0.flag == b.flag }) { kp.selectItem(at: ki) }
         kp.tag = index; kp.target = self; kp.action = #selector(kpChanged)
+        kp.widthAnchor.constraint(equalToConstant: 168).isActive = true
 
         let en = NSButton(checkboxWithTitle: "启用", target: self, action: #selector(enChanged))
         en.tag = index; en.state = b.enabled ? .on : .off
 
         let rm = NSButton(title: "删除", target: self, action: #selector(rmPressed))
-        rm.tag = index
+        rm.tag = index; rm.bezelStyle = .rounded
+        rm.widthAnchor.constraint(equalToConstant: 52).isActive = true
 
-        row.addArrangedSubview(gp); row.addArrangedSubview(kp); row.addArrangedSubview(en); row.addArrangedSubview(rm)
-        return row
+        return [gp, kp, en, rm]
     }
 
     private func commit(_ mutate: (inout Config) -> Void) {
@@ -200,14 +305,14 @@ class SettingsViewController: NSViewController {
     @objc func holdChanged(_ s: NSTextField) {
         commit { $0.holdSeconds = Double(s.stringValue) ?? 0 }
     }
-    @objc func closureChanged() { closureVal.stringValue = String(format: "闭合容差 %.2f", closureSlider.doubleValue) }
-    @objc func roundnessChanged() { roundnessVal.stringValue = String(format: "圆度要求 %.2f", roundnessSlider.doubleValue) }
+    @objc func closureChanged() { closureVal.stringValue = String(format: "%.2f", closureSlider.doubleValue) }
+    @objc func roundnessChanged() { roundnessVal.stringValue = String(format: "%.2f", roundnessSlider.doubleValue) }
     @objc func closureDone(_ s: NSSlider) {
-        closureVal.stringValue = String(format: "闭合容差 %.2f", s.doubleValue)
+        closureVal.stringValue = String(format: "%.2f", s.doubleValue)
         commit { $0.maxClosure = s.doubleValue }
     }
     @objc func roundnessDone(_ s: NSSlider) {
-        roundnessVal.stringValue = String(format: "圆度要求 %.2f", s.doubleValue)
+        roundnessVal.stringValue = String(format: "%.2f", s.doubleValue)
         commit { $0.maxRadiusStd = s.doubleValue }
     }
 
@@ -221,27 +326,30 @@ class SettingsViewController: NSViewController {
     // Called by the app delegate on live events.
     func refreshLive() {
         let trusted = AXIsProcessTrusted()
-        let perm = trusted
-            ? "辅助功能：已授权 ✅"
-            : "辅助功能：未授权 ⚠️ 点『打开辅助功能设置』，在系统设置里点 ＋ 加入本 App 并打勾，再退出重开"
-        let dev: String
+
         if controller.deviceConnected {
-            dev = controller.deviceBuiltIn
-                ? "设备：已连接（但被识别为内建设备，可能不是 Magic Mouse）"
-                : "设备：已连接（外部 Magic Mouse）"
+            deviceVal.stringValue = controller.deviceBuiltIn
+                ? "已连接（内建设备，可能不是 Magic Mouse）"
+                : "已连接（外部 Magic Mouse）"
         } else {
-            dev = "设备：未连接（请连接 Magic Mouse 后点『重新连接设备』）"
+            deviceVal.stringValue = "未连接 — 请连接 Magic Mouse 后用菜单栏『重新连接设备』"
         }
-        let frameHint = controller.frameCount > 0
-            ? "（在涨 = 手势读取正常）"
-            : "（若一直为 0，可能权限尚未生效：请退出本 App 重新打开后再试）"
-        statusBox.stringValue = """
-        \(dev)
-        已捕获帧数：\(controller.frameCount) \(frameHint)
-        最近识别：\(controller.lastGesture)
-        \(perm)
-        输入监控：请到系统设置确认本 App 已加入并打勾（macOS 不提供读取该状态，App 内无法自动显示对号；授权后请退出重开本 App 使其生效）
-        """
+
+        frameVal.stringValue = controller.frameCount > 0
+            ? "\(controller.frameCount)（在涨 = 手势读取正常）"
+            : "0（一直为 0 说明权限未生效：请退出本 App 重新打开）"
+
+        gestureVal.stringValue = controller.lastGesture
+
+        if trusted {
+            axVal.stringValue = "已授权 ✓"
+            axVal.textColor = .systemGreen
+        } else {
+            axVal.stringValue = "未授权 — 点下方『打开辅助功能设置』把本 App 加入并打勾，再退出重开"
+            axVal.textColor = .systemOrange
+        }
+
+        imVal.stringValue = "需在系统设置中确认已加入并打勾（macOS 不提供读取，App 内无法自动显示对号）"
     }
 }
 
@@ -346,8 +454,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let vc = SettingsViewController()
         settingsVC = vc
         let win = NSWindow(contentViewController: vc)
-        win.styleMask = [.titled, .closable]
+        win.styleMask = [.titled, .closable, .resizable]
         win.title = "鼠标手势按键 - 设置"
+        win.setContentSize(NSSize(width: 560, height: 780))
+        win.minSize = NSSize(width: 520, height: 420)
         win.center()
         win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -390,9 +500,38 @@ func openInputMonitoringPrefs() {
 final class Launcher: NSObject {
     static func main() {
         let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)   // menu-bar-only app (no Dock icon)
+
+        // Dev helper: render the settings window to a PNG and exit, so the layout
+        // can be inspected without a screen capture.
+        if CommandLine.arguments.contains("--snapshot") {
+            let vc = SettingsViewController()
+            let stack = vc.buildContent()
+            vc.refreshLive()
+            let host = NSView(frame: NSRect(x: 0, y: 0, width: 560, height: 200))
+            host.wantsLayer = true
+            host.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+            stack.translatesAutoresizingMaskIntoConstraints = false
+            host.addSubview(stack)
+            NSLayoutConstraint.activate([
+                stack.topAnchor.constraint(equalTo: host.topAnchor, constant: 22),
+                stack.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: 22),
+                stack.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: -22),
+            ])
+            host.layoutSubtreeIfNeeded()
+            host.frame.size.height = stack.fittingSize.height + 44
+            host.layoutSubtreeIfNeeded()
+            if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                host.cacheDisplay(in: host.bounds, to: rep)
+                if let data = rep.representation(using: .png, properties: [:]) {
+                    try? data.write(to: URL(fileURLWithPath: "/tmp/mgk_ui.png"))
+                }
+            }
+            exit(0)
+        }
+
         let delegate = AppDelegate()
         app.delegate = delegate
-        app.setActivationPolicy(.accessory)   // menu-bar-only app (no Dock icon)
         app.run()
     }
 }
