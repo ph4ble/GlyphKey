@@ -7,7 +7,7 @@ APP=MouseGestureKey.app
 BIN="$APP/Contents/MacOS/MouseGestureKey"
 
 echo "==> Compiling CLI binary"
-swiftc -swift-version 5 -O Engine.swift mousegesturekey.swift -o MouseGestureKey
+swiftc -swift-version 5 -O -framework ApplicationServices -framework CoreGraphics Engine.swift mousegesturekey.swift -o MouseGestureKey
 
 echo "==> Compiling .app"
 rm -rf "$APP"

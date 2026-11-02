@@ -15,6 +15,7 @@
 import Foundation
 import CoreGraphics
 import CoreFoundation
+import ApplicationServices
 import Dispatch
 
 // ---------------------------------------------------------------------------
@@ -80,13 +81,28 @@ struct Config: Codable {
 // CGEventFlags raw bitmasks (kCGEventFlagMask*). The physical left/right key
 // is selected by keyCode; the mask just marks the modifier family.
 func cgFlags(for flag: String) -> CGEventFlags {
+    // Generic modifier masks (high bits) PLUS device-dependent left/right bits, so a
+    // synthesized modifier is recognized as the correct physical key (e.g. RIGHT Option).
+    let alt   = UInt64(1) << 19   // maskAlternate
+    let ctrl  = UInt64(1) << 18   // maskControl
+    let shift = UInt64(1) << 17   // maskShift
+    let cmd   = UInt64(1) << 20   // maskCommand
+    let rAlt: UInt64   = 0x40     // NX_DEVICERALTKEYMASK
+    let lAlt: UInt64   = 0x20     // NX_DEVICELALTKEYMASK
+    let rCtrl: UInt64  = 0x2000   // NX_DEVICERCTLKEYMASK
+    let rShift: UInt64 = 0x04     // NX_DEVICERSHIFTKEYMASK
+    let rCmd: UInt64   = 0x10     // NX_DEVICERCMDKEYMASK
     let raw: UInt64
     switch flag {
-    case "rightOption", "leftOption", "option": raw = 1 << 19   // alternate (Option)
-    case "rightControl", "control":            raw = 1 << 18   // control
-    case "rightShift", "shift":               raw = 1 << 17   // shift
-    case "command", "rightCommand":           raw = 1 << 20   // command
-    default:                                  raw = 0
+    case "rightOption":          raw = alt | rAlt
+    case "leftOption", "option": raw = alt | lAlt
+    case "rightControl":         raw = ctrl | rCtrl
+    case "control":              raw = ctrl
+    case "rightShift":           raw = shift | rShift
+    case "shift":                raw = shift
+    case "rightCommand":         raw = cmd | rCmd
+    case "command":              raw = cmd
+    default:                     raw = 0
     }
     return CGEventFlags(rawValue: raw)
 }
@@ -181,7 +197,8 @@ final class GestureController {
             if let fp = GestureController.debugFP {
                 let exe = CommandLine.arguments.first ?? "?"
                 let pid = ProcessInfo.processInfo.processIdentifier
-                fputs(String(format: "=== start pid=%d exe=%s\n", pid, (exe as NSString).utf8String ?? ""), fp)
+                let ax = AXIsProcessTrusted() ? 1 : 0
+                fputs(String(format: "=== start pid=%d axTrusted=%d exe=%s\n", pid, ax, (exe as NSString).utf8String ?? ""), fp)
                 fflush(fp)
             }
         }
@@ -517,14 +534,17 @@ final class GestureController {
 
         // Tap: short, tiny movement.
         if duration < 0.35, w < 0.18, h < 0.18 { result = "tap" }
-        // Circle: most of the loop traced, roughly constant radius, and the path
-        // returns close to where it started *relative to its total length*. Using
-        // `straight` (= netDist / path) instead of an end-near-start distance means a
-        // single loop OR several loops drawn in one continuous stroke both classify
-        // as a circle (the start/end are far apart in a multi-loop stroke, but the
-        // net displacement is tiny compared with the long path).
-        else if meanR > 0.1, std / meanR < Float(config.maxRadiusStd),
-                sweep > Float(config.minAngularCoverage), straight < Float(config.maxClosure) { result = "circle" }
+        // Circle: a roughly round, reasonably sized loop traced ~1–2.5 times.
+        // The size / aspect-ratio / sweep bounds are what reject noisy "click"
+        // strokes: a tiny jitter around the centroid can inflate sweep and look
+        // circular, but it can't fill a round, reasonably sized bounding box.
+        else if meanR > 0.12,
+                w > 0.15, h > 0.15,
+                min(w, h) / max(w, h) > 0.4,
+                sweep > Float(config.minAngularCoverage),
+                sweep < 20,
+                std / meanR < Float(config.maxRadiusStd),
+                straight < Float(config.maxClosure) { result = "circle" }
         // Swipe: a fairly straight drag with significant net movement.
         else if netDist > 0.12, straight > 0.75 {
             if abs(netDx) > abs(netDy) { result = netDx > 0 ? "swipeRight" : "swipeLeft" }
@@ -569,19 +589,16 @@ final class GestureController {
 
         let keyCode = b.keyCode
         let flags = cgFlags(for: b.flag)
-        let down = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true)!
+        let src = CGEventSource(stateID: .hidSystemState)
+        let down = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: true)!
         down.flags = flags
         down.post(tap: .cghidEventTap)
-        if config.holdSeconds > 0 {
-            Thread.sleep(forTimeInterval: config.holdSeconds)
-            let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false)!
-            up.flags = flags
-            up.post(tap: .cghidEventTap)
-        } else {
-            let up = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false)!
-            up.flags = flags
-            up.post(tap: .cghidEventTap)
-        }
+        // Hold briefly so the modifier press is unambiguous, then release with CLEARED
+        // flags — otherwise a modifier (e.g. Right Option) stays "stuck" down.
+        Thread.sleep(forTimeInterval: max(config.holdSeconds, 0.05))
+        let up = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: false)!
+        up.flags = []
+        up.post(tap: .cghidEventTap)
         let fired = String(format: "FIRED gesture=%@ keyCode=%u flag=%@\n", name, keyCode, b.flag)
         fputs(fired, stderr)
         if let fp = GestureController.debugFP { fputs(fired, fp); fflush(fp) }
