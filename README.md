@@ -5,6 +5,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Platform: macOS 11+](https://img.shields.io/badge/platform-macOS%2011%2B-lightgrey)
+[![X: @ph4ble](https://img.shields.io/badge/X-@ph4ble-black.svg)](https://x.com/ph4ble)
 
 ![GlyphKey 设置界面](docs/screenshot.png)
 
@@ -13,6 +14,18 @@
 默认：**在鼠标表面画一个圈 → 发送右侧 Option 键**（可用来一键开关微信语音输入）。你也可以在图形界面里自由添加多个「手势 → 按键」映射。
 
 > English: **GlyphKey** is a tiny macOS menu-bar app that turns gestures drawn on an Apple mouse or trackpad into keyboard keys. Map any gesture (circle, swipe, tap…) to any key — with a live status panel, customizable sensitivity, and a one-click launch-at-login toggle.
+
+---
+
+## 🧭 缘起
+
+我平时用**语音输入法**打字。可每次开始 / 停止语音，都得先按一下某个键，手又得离开鼠标去够键盘——**一会儿按键、一会儿挪鼠标**，来回切换很别扭，思路也被打断。
+
+既然手本来就在鼠标上，那能不能**用鼠标画个手势，就把这个键给按了**？于是就有了 GlyphKey：**只用鼠标，就能完成「按键」这一步。**
+
+默认我把「画一个圈」映射成「右侧 Option」，正好用来一键开关微信语音输入；你也可以按自己的习惯，改成任意手势 → 任意按键。
+
+> 作者 / Author：[@ph4ble](https://x.com/ph4ble) · 欢迎交流与反馈。
 
 ---
 
@@ -212,6 +225,8 @@ GlyphKey 需要**读取鼠标触控**并**向其他 App 发送按键**，macOS �
 ## 📄 许可证
 
 MIT License，详见 [LICENSE](LICENSE)。欢迎 Issue 与 PR。
+
+> 作者：[ph4ble](https://x.com/ph4ble) · X：https://x.com/ph4ble
 
 ---
 
