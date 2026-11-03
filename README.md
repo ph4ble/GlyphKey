@@ -11,7 +11,7 @@
 
 **GlyphKey（指诀）** 是一个 macOS 菜单栏小工具：把你在 **Apple Magic Mouse / 触控板** 上画出的手势，映射成任意一个键盘按键。
 
-默认：**在鼠标表面画一个圈 → 发送右侧 Option 键**（可用来一键开关微信语音输入）。你也可以在图形界面里自由添加多个「手势 → 按键」映射。
+默认：**在鼠标表面画一个圈 → 发送右侧 Option 键**（可用来一键开关语音输入法，如微信输入法）。你也可以在图形界面里自由添加多个「手势 → 按键」映射。
 
 > English: **GlyphKey** is a tiny macOS menu-bar app that turns gestures drawn on an Apple mouse or trackpad into keyboard keys. Map any gesture (circle, swipe, tap…) to any key — with a live status panel, customizable sensitivity, and a one-click launch-at-login toggle.
 
@@ -23,7 +23,7 @@
 
 既然手本来就在鼠标上，那能不能**用鼠标画个手势，就把这个键给按了**？于是就有了 GlyphKey：**只用鼠标，就能完成「按键」这一步。**
 
-默认我把「画一个圈」映射成「右侧 Option」，正好用来一键开关微信语音输入；你也可以按自己的习惯，改成任意手势 → 任意按键。
+默认我把「画一个圈」映射成「右侧 Option」，正好用来一键开关语音输入法（如微信输入法）；你也可以按自己的习惯，改成任意手势 → 任意按键。
 
 > 作者 / Author：[@ph4ble](https://x.com/ph4ble) · 欢迎交流与反馈。
 
